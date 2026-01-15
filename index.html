@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DORA Compliance Hub</title>
+    
+    <!-- React & ReactDOM (Il motore dell'app) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel (Per capire il codice React nel browser) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS (Per la grafica bella) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Lucide Icons (Le icone) -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        body { background-color: #f8fafc; }
+        .animate-fadeIn { animation: fadeIn 0.5s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- CONFIGURAZIONE GEMINI ---
+        // Nota: In un file HTML pubblico, la chiave è visibile. 
+        // Per uso personale/demo va bene, per produzione servirebbe un backend.
+        const API_KEY = ""; // INSERISCI QUI LA TUA API KEY SE VUOI CHE FUNZIONI
+        const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY}`;
+
+        // --- COMPONENTI ICONE (Wrapper per Lucide) ---
+        const Icon = ({ name, className, ...props }) => {
+            const iRef = useRef(null);
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons({
+                        root: iRef.current,
+                        name: name,
+                        attrs: { class: className, ...props }
+                    });
+                }
+            }, [name, className]);
+            return <i ref={iRef} className={className} {...props}></i>;
+        };
+
+        // --- DATI INIZIALI ---
+        const INITIAL_DOCS = [
+            {
+                id: 1,
+                title: "RTS sulla classificazione degli incidenti ICT",
+                source: "EBA / ESMA",
+                type: "RTS (Regolamento Delegato)",
+                date: "2024-01-15",
+                status: "In Vigore",
+                summary: "Definisce i criteri per classificare gli incidenti gravi (major incidents). Introduce soglie quantitative per l'impatto sugli utenti e sulla durata del disservizio.",
+                tags: ["Incident Management", "Reporting"],
+                relevance: "Alta",
+                url: "#"
+            },
+            {
+                id: 2,
+                title: "Consultazione IVASS n. 4/2024 - Recepimento DORA",
+                source: "IVASS",
+                type: "Consultazione",
+                date: "2024-02-10",
+                status: "Bozza / Aperta",
+                summary: "L'IVASS propone modifiche al Regolamento 38 per allinearlo a DORA. Focus sulla gestione dei rischi terzi (TPRM) per le compagnie assicurative italiane.",
+                tags: ["TPRM", "Governance"],
+                relevance: "Media",
+                url: "#"
+            },
+            {
+                id: 3,
+                title: "ITS sul registro delle informazioni (Register of Information)",
+                source: "EUR-Lex",
+                type: "ITS (Standard Tecnico)",
+                date: "2024-01-20",
+                status: "Pubblicato in GU",
+                summary: "Standardizza il formato Excel/XML che le entità finanziarie devono usare per mappare tutti i fornitori ICT terzi. Obbligatorio dal 2025.",
+                tags: ["TPRM", "Compliance"],
+                relevance: "Critica",
+                url: "#"
+            }
+        ];
+
+        // --- APP PRINCIPALE ---
+        function DoraApp() {
+            const [documents, setDocuments] = useState(INITIAL_DOCS);
+            const [searchTerm, setSearchTerm] = useState("");
+            const [selectedSource, setSelectedSource] = useState("Tutte");
+            const [isLoading, setIsLoading] = useState(false);
+            const [showNotification, setShowNotification] = useState(false);
+            
+            // AI States
+            const [chatOpen, setChatOpen] = useState(false);
+            const [chatMessages, setChatMessages] = useState([
+                { role: 'assistant', text: "Ciao! Sono il tuo assistente DORA. Chiedimi pure spiegazioni sui regolamenti." }
+            ]);
+            const [chatInput, setChatInput] = useState("");
+            const [isChatTyping, setIsChatTyping] = useState(false);
+            const [actionPlans, setActionPlans] = useState({});
+            const [loadingPlans, setLoadingPlans] = useState({});
+            const chatEndRef = useRef(null);
+
+            useEffect(() => {
+                chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+                // Inizializza icone Lucide all'avvio
+                if(window.lucide) window.lucide.createIcons();
+            }, [chatMessages, documents, chatOpen]);
+
+            // --- API CALL ---
+            const callGemini = async (prompt) => {
+                if (!API_KEY) return "⚠️ Manca la API Key nel codice. Apri il file index.html e inseriscila alla riga 35.";
+                try {
+                    const response = await fetch(API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                    });
+                    const data = await response.json();
+                    return data.candidates?.[0]?.content?.parts?.[0]?.text || "Errore nella risposta.";
+                } catch (e) {
+                    return "Errore di connessione con l'AI.";
+                }
+            };
+
+            // --- HANDLERS ---
+            const handleSendMessage = async () => {
+                if (!chatInput.trim()) return;
+                const userMsg = chatInput;
+                setChatMessages(prev => [...prev, { role: 'user', text: userMsg }]);
+                setChatInput("");
+                setIsChatTyping(true);
+
+                const prompt = `Sei un esperto DORA. Rispondi brevemente a: "${userMsg}"`;
+                const reply = await callGemini(prompt);
+                
+                setChatMessages(prev => [...prev, { role: 'assistant', text: reply }]);
+                setIsChatTyping(false);
+            };
+
+            const generateActionPlan = async (docId, title, summary) => {
+                if (actionPlans[docId]) {
+                    setActionPlans(prev => { const n = {...prev}; delete n[docId]; return n; });
+                    return;
+                }
+                setLoadingPlans(prev => ({ ...prev, [docId]: true }));
+                const prompt = `Analizza: ${title}. Sintesi: ${summary}. Crea 3 step operativi per un Compliance Officer.`;
+                const plan = await callGemini(prompt);
+                setActionPlans(prev => ({ ...prev, [docId]: plan }));
+                setLoadingPlans(prev => ({ ...prev, [docId]: false }));
+            };
+
+            const simulateUpdate = () => {
+                setIsLoading(true);
+                setTimeout(() => {
+                    const newDoc = {
+                        id: Date.now(),
+                        title: "Nuovo RTS su ICT Risk Management",
+                        source: "EUR-Lex",
+                        type: "RTS",
+                        date: new Date().toISOString().split('T')[0],
+                        status: "Appena Pubblicato",
+                        summary: "NUOVO AGGIORNAMENTO: Pubblicato il testo finale sui requisiti di policy per la sicurezza ICT.",
+                        tags: ["Risk", "Policy"],
+                        relevance: "Critica",
+                        url: "#",
+                        isNew: true
+                    };
+                    setDocuments([newDoc, ...documents]);
+                    setIsLoading(false);
+                    setShowNotification(true);
+                    setTimeout(() => setShowNotification(false), 5000);
+                }, 2000);
+            };
+
+            // Filtri
+            const sources = ["Tutte", "IVASS", "EBA / ESMA", "EUR-Lex"];
+            const filtered = documents.filter(doc => {
+                const matchSearch = doc.title.toLowerCase().includes(searchTerm.toLowerCase());
+                const matchSource = selectedSource === "Tutte" || doc.source === selectedSource;
+                return matchSearch && matchSource;
+            });
+
+            return (
+                <div className="min-h-screen font-sans text-slate-800 pb-20">
+                    
+                    {/* Header */}
+                    <header className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
+                        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+                            <div className="flex items-center space-x-3">
+                                <div className="bg-blue-600 p-2 rounded-lg text-white">
+                                    <i data-lucide="shield"></i>
+                                </div>
+                                <div>
+                                    <h1 className="text-xl font-bold text-slate-900">DORA Compliance Hub</h1>
+                                </div>
+                            </div>
+                            <button onClick={simulateUpdate} disabled={isLoading} className="hidden sm:flex items-center px-4 py-2 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 font-medium text-sm transition-colors">
+                                {isLoading ? "Ricerca..." : "Cerca Aggiornamenti"}
+                            </button>
+                        </div>
+                    </header>
+
+                    {/* Notifica */}
+                    {showNotification && (
+                        <div className="fixed top-20 right-4 bg-emerald-600 text-white px-6 py-4 rounded-lg shadow-xl z-50 flex items-center animate-bounce">
+                            <i data-lucide="check-circle" className="mr-3"></i>
+                            <div>
+                                <h4 className="font-bold">Nuovo Documento!</h4>
+                                <p className="text-sm">Trovato un nuovo aggiornamento normativo.</p>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Main Content */}
+                    <main className="max-w-6xl mx-auto px-4 py-8">
+                        
+                        {/* KPI Cards */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+                            <div className="bg-white p-6 rounded-xl border shadow-sm flex items-center gap-4">
+                                <div className="p-3 bg-blue-50 text-blue-600 rounded-full"><i data-lucide="book-open"></i></div>
+                                <div><p className="text-sm text-slate-500">Documenti</p><h3 className="text-2xl font-bold">{documents.length}</h3></div>
+                            </div>
+                            <div className="bg-white p-6 rounded-xl border shadow-sm flex items-center gap-4">
+                                <div className="p-3 bg-amber-50 text-amber-600 rounded-full"><i data-lucide="clock"></i></div>
+                                <div><p className="text-sm text-slate-500">In Scadenza</p><h3 className="text-2xl font-bold">3</h3></div>
+                            </div>
+                            <div className="bg-white p-6 rounded-xl border shadow-sm flex items-center gap-4">
+                                <div className="p-3 bg-emerald-50 text-emerald-600 rounded-full"><i data-lucide="check-circle"></i></div>
+                                <div><p className="text-sm text-slate-500">Stato</p><h3 className="text-2xl font-bold">Conforme</h3></div>
+                            </div>
+                        </div>
+
+                        <div className="flex flex-col lg:flex-row gap-8">
+                            {/* Sidebar */}
+                            <aside className="w-full lg:w-64 space-y-6">
+                                <div className="bg-white p-5 rounded-xl border shadow-sm sticky top-24">
+                                    <h3 className="font-bold mb-4 flex gap-2"><i data-lucide="filter"></i> Filtri</h3>
+                                    <div className="space-y-4">
+                                        <input 
+                                            type="text" 
+                                            placeholder="Cerca..." 
+                                            className="w-full p-2 border rounded-lg text-sm bg-slate-50"
+                                            value={searchTerm}
+                                            onChange={e => setSearchTerm(e.target.value)}
+                                        />
+                                        <div className="space-y-2">
+                                            <p className="text-xs font-bold text-slate-500 uppercase">Fonte</p>
+                                            {sources.map(s => (
+                                                <label key={s} className="flex items-center space-x-2 cursor-pointer text-sm">
+                                                    <input type="radio" name="source" checked={selectedSource === s} onChange={() => setSelectedSource(s)} className="text-blue-600"/>
+                                                    <span>{s}</span>
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            </aside>
+
+                            {/* Feed */}
+                            <div className="flex-1 space-y-4">
+                                {filtered.map(doc => (
+                                    <div key={doc.id} className={`bg-white rounded-xl border p-6 shadow-sm transition-all hover:shadow-md ${doc.isNew ? 'border-l-4 border-l-emerald-500' : ''}`}>
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div className="flex gap-2">
+                                                <span className="px-2 py-1 bg-slate-100 text-xs font-bold rounded text-slate-600">{doc.source}</span>
+                                                <span className="px-2 py-1 bg-blue-50 text-xs font-bold rounded text-blue-700">{doc.type}</span>
+                                                {doc.relevance === "Critica" && <span className="px-2 py-1 bg-red-50 text-xs font-bold rounded text-red-700">Critica</span>}
+                                            </div>
+                                            <span className="text-xs text-slate-400">{doc.date}</span>
+                                        </div>
+                                        
+                                        <h3 className="text-lg font-bold text-slate-900 mb-2">{doc.title}</h3>
+                                        
+                                        <div className="bg-slate-50 p-4 rounded-lg border border-slate-100 mb-4">
+                                            <div className="flex items-center gap-2 mb-1">
+                                                <span className="text-[10px] bg-purple-100 text-purple-700 px-1 rounded font-bold">AI</span>
+                                                <span className="text-xs font-bold text-slate-500">SINTESI</span>
+                                            </div>
+                                            <p className="text-sm text-slate-700">{doc.summary}</p>
+                                        </div>
+
+                                        <div className="flex justify-between items-center mt-4">
+                                            <div className="flex gap-2">
+                                                {doc.tags.map(t => <span key={t} className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded">#{t}</span>)}
+                                            </div>
+                                            <button 
+                                                onClick={() => generateActionPlan(doc.id, doc.title, doc.summary)}
+                                                className="flex items-center gap-2 text-sm font-bold text-purple-700 bg-purple-50 px-3 py-1.5 rounded hover:bg-purple-100 transition-colors"
+                                            >
+                                                {loadingPlans[doc.id] ? "Generazione..." : (actionPlans[doc.id] ? "Chiudi Piano" : "Genera Piano Operativo ✨")}
+                                            </button>
+                                        </div>
+
+                                        {actionPlans[doc.id] && (
+                                            <div className="mt-4 p-4 bg-purple-50 border border-purple-100 rounded-lg animate-fadeIn text-sm text-purple-900 whitespace-pre-wrap">
+                                                <strong>Piano d'Azione AI:</strong><br/><br/>{actionPlans[doc.id]}
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </main>
+
+                    {/* Chatbot */}
+                    <div className={`fixed bottom-6 right-6 z-50 transition-all duration-300 ${chatOpen ? 'w-80 sm:w-96' : 'w-auto'}`}>
+                        {!chatOpen && (
+                            <button onClick={() => setChatOpen(true)} className="h-14 w-14 bg-blue-600 rounded-full shadow-lg flex items-center justify-center text-white hover:scale-110 transition-transform">
+                                <i data-lucide="message-square"></i>
+                            </button>
+                        )}
+                        {chatOpen && (
+                            <div className="bg-white rounded-2xl shadow-2xl border overflow-hidden flex flex-col h-[450px]">
+                                <div className="bg-blue-600 p-4 text-white flex justify-between items-center font-bold">
+                                    <div className="flex gap-2 items-center"><i data-lucide="sparkles"></i> DORA AI</div>
+                                    <button onClick={() => setChatOpen(false)}><i data-lucide="x"></i></button>
+                                </div>
+                                <div className="flex-1 p-4 overflow-y-auto bg-slate-50 space-y-3">
+                                    {chatMessages.map((m, i) => (
+                                        <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                            <div className={`max-w-[85%] px-4 py-2 rounded-2xl text-sm ${m.role === 'user' ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-white border text-slate-800 rounded-tl-none shadow-sm'}`}>
+                                                {m.text}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {isChatTyping && <div className="text-xs text-slate-400 ml-4">L'AI sta scrivendo...</div>}
+                                    <div ref={chatEndRef}></div>
+                                </div>
+                                <div className="p-3 border-t bg-white flex gap-2">
+                                    <input 
+                                        type="text" 
+                                        placeholder="Chiedi..." 
+                                        className="flex-1 bg-slate-100 rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                        value={chatInput}
+                                        onChange={e => setChatInput(e.target.value)}
+                                        onKeyPress={e => e.key === 'Enter' && handleSendMessage()}
+                                    />
+                                    <button onClick={handleSendMessage} className="p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700"><i data-lucide="send" width="16"></i></button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<DoraApp />);
+        
+        // Attiva le icone dopo il render iniziale
+        setTimeout(() => window.lucide && window.lucide.createIcons(), 100);
+    </script>
+</body>
+</html>
